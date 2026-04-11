@@ -5,9 +5,13 @@ This project analyzes photometric time-series data from the Kepler Space Telesco
 
 ## Overview
 
-A Kepler FITS light curve file was processed using Python and Astropy to extract time and corrected flux measurements. The data was cleaned and normalized to highlight relative brightness variations.
+A Kepler FITS light curve file was processed using Python and Astropy to extract time and corrected flux measurements. The data was cleaned and normalized to highlight relative brightness variations. This workflow mirrors techniques used in time-series analysis for stellar rotation and variability studies.
 
-A sinusoidal model was applied to estimate the dominant periodic signal in the dataset.
+sinusoidal regression using least squares was applied to estimate the dominant periodic signal in the dataset.
+
+## Data Source
+
+Kepler Space Telescope public light curve data (FITS format).
 
 ## Results
 
@@ -23,6 +27,7 @@ This periodic behavior is consistent with rotational modulation, where stellar s
 - Time-series normalization
 - Period estimation using sinusoidal fitting
 - Visualization of observed vs modeled light curve
+- Period search performed by fitting sinusoidal basis functions (sin, cos) across a grid of trial periods using least squares
 
 ## Technologies Used
 
