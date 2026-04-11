@@ -129,7 +129,7 @@ from astropy.io import fits
 import numpy as np
 import matplotlib.pyplot as plt
 
-filename = "your_file_name_here.fits"
+filename = "kplr000757450-2009350155506_llc.fits"
 
 hdul = fits.open(filename)
 hdul.info()
@@ -153,6 +153,7 @@ plt.xlabel("Time (BKJD)")
 plt.ylabel("Normalized Flux")
 plt.title("Kepler Light Curve")
 plt.tight_layout()
+plt.savefig("lightcurve.png", dpi=300)
 plt.show()
 
 hdul.close()
