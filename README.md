@@ -34,3 +34,13 @@ This periodic behavior is consistent with rotational modulation, where stellar s
 ## Significance
 
 This project demonstrates how periodic signals can be extracted from noisy astronomical data, a key technique used in stellar analysis and exoplanet detection.
+## Visualizations
+
+### Raw Light Curve
+![Raw Light Curve](lightcurve.png)
+
+### Light Curve with Best-Fit Model
+![Light Curve Fit](lightcurve_fit.png)
+
+### Period Search
+![Period Search](period_search.png)
