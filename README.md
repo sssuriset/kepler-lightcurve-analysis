@@ -1,6 +1,5 @@
-# kepler-lightcurve-analysis
-Kepler light curve analysis with period estimation using Python and Astropy
 # Kepler Light Curve Analysis
+Kepler light curve analysis with period estimation using Python and Astropy
 
 This project analyzes photometric time-series data from the Kepler Space Telescope to identify periodic brightness variations in a star.
 
