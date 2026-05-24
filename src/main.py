@@ -1,26 +1,38 @@
-import os
+import argparse
 import glob
+import os
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-
 from astropy.io import fits
 from astropy.timeseries import LombScargle
 from scipy.optimize import curve_fit
 
 
-def find_fits_file():
+MIN_PERIOD = 0.5
+MAX_PERIOD = 40.0
+N_FREQ = 25000
+
+
+def find_fits(path=None):
+    if path:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"FITS file not found: {path}")
+        return path
+
     patterns = [
         "data/*.fits",
         "data/*.fit",
         "*.fits",
-        "*.fit"
+        "*.fit",
     ]
 
     files = []
-
     for pattern in patterns:
         files.extend(glob.glob(pattern))
+
+    files = sorted(files)
 
     if not files:
         raise FileNotFoundError(
@@ -30,7 +42,7 @@ def find_fits_file():
     return files[0]
 
 
-def load_kepler_light_curve(path):
+def load_curve(path):
     with fits.open(path) as hdul:
         table = hdul[1].data
         columns = table.columns.names
@@ -63,40 +75,43 @@ def load_kepler_light_curve(path):
 
     raw_count = len(time)
 
-    finite_mask = np.isfinite(time) & np.isfinite(flux)
-    quality_mask = quality == 0
-    positive_mask = flux > 0
+    finite = np.isfinite(time) & np.isfinite(flux)
+    good_quality = quality == 0
+    positive_flux = flux > 0
+    keep = finite & good_quality & positive_flux
 
-    clean_mask = finite_mask & quality_mask & positive_mask
+    data = pd.DataFrame(
+        {
+            "time_bkjd": time[keep],
+            "flux": flux[keep],
+            "flux_error": flux_error[keep],
+            "quality": quality[keep],
+        }
+    )
 
-    cleaned = pd.DataFrame({
-        "time_bkjd": time[clean_mask],
-        "flux": flux[clean_mask],
-        "flux_error": flux_error[clean_mask],
-        "quality": quality[clean_mask]
-    })
+    flagged = pd.DataFrame(
+        {
+            "time_bkjd": time[~keep],
+            "flux": flux[~keep],
+            "flux_error": flux_error[~keep],
+            "quality": quality[~keep],
+        }
+    )
 
-    flagged = pd.DataFrame({
-        "time_bkjd": time[~clean_mask],
-        "flux": flux[~clean_mask],
-        "flux_error": flux_error[~clean_mask],
-        "quality": quality[~clean_mask]
-    })
+    median_flux = np.nanmedian(data["flux"])
+    data["normalized_flux"] = data["flux"] / median_flux
 
-    median_flux = np.nanmedian(cleaned["flux"])
-    cleaned["normalized_flux"] = cleaned["flux"] / median_flux
-
-    return cleaned, flagged, raw_count, flux_source
+    return data, flagged, raw_count, flux_source
 
 
-def sinusoid(time, offset, amplitude, period, phase):
+def sine_model(time, offset, amplitude, period, phase):
     return offset + amplitude * np.sin((2 * np.pi * time / period) + phase)
 
 
-def run_lomb_scargle(time, normalized_flux, min_period=0.5, max_period=40):
-    centered_flux = normalized_flux - np.nanmean(normalized_flux)
+def lomb_scan(time, flux, min_period=MIN_PERIOD, max_period=MAX_PERIOD, n_freq=N_FREQ):
+    centered_flux = flux - np.nanmean(flux)
 
-    frequency = np.linspace(1 / max_period, 1 / min_period, 25000)
+    frequency = np.linspace(1 / max_period, 1 / min_period, n_freq)
     ls = LombScargle(time, centered_flux)
     power = ls.power(frequency)
 
@@ -105,16 +120,14 @@ def run_lomb_scargle(time, normalized_flux, min_period=0.5, max_period=40):
 
     best_period = periods[best_index]
     best_power = power[best_index]
-
     false_alarm_level = float(np.asarray(ls.false_alarm_level(0.01)).mean())
 
     return periods, power, best_period, best_power, false_alarm_level
 
 
-def estimate_period_uncertainty(periods, power, best_period):
+def peak_width(periods, power):
     best_index = np.argmax(power)
     peak_power = power[best_index]
-
     baseline = np.nanmedian(power)
     half_height = baseline + 0.5 * (peak_power - baseline)
 
@@ -127,10 +140,12 @@ def estimate_period_uncertainty(periods, power, best_period):
     while right < len(power) - 1 and power[right] > half_height:
         right += 1
 
-    lower_period = periods[min(left, right)]
-    upper_period = periods[max(left, right)]
+    edge1 = periods[left]
+    edge2 = periods[right]
 
-    uncertainty = abs(upper_period - lower_period) / 2
+    lower_period = min(edge1, edge2)
+    upper_period = max(edge1, edge2)
+    uncertainty = 0.5 * (upper_period - lower_period)
 
     if uncertainty == 0 or not np.isfinite(uncertainty):
         uncertainty = np.nan
@@ -138,138 +153,143 @@ def estimate_period_uncertainty(periods, power, best_period):
     return uncertainty, lower_period, upper_period
 
 
-def fit_sinusoid(time, normalized_flux, period_guess):
+def fit_wave(time, flux, period_guess):
     initial = [
         1.0,
-        0.5 * (np.nanmax(normalized_flux) - np.nanmin(normalized_flux)),
+        0.5 * (np.nanmax(flux) - np.nanmin(flux)),
         period_guess,
-        0.0
+        0.0,
     ]
 
     bounds = (
         [0.5, -1.0, period_guess * 0.75, -2 * np.pi],
-        [1.5, 1.0, period_guess * 1.25, 2 * np.pi]
+        [1.5, 1.0, period_guess * 1.25, 2 * np.pi],
     )
 
     params, covariance = curve_fit(
-        sinusoid,
+        sine_model,
         time,
-        normalized_flux,
+        flux,
         p0=initial,
         bounds=bounds,
-        maxfev=20000
+        maxfev=20000,
     )
 
-    model_flux = sinusoid(time, *params)
-    residuals = normalized_flux - model_flux
-
+    model_flux = sine_model(time, *params)
+    residuals = flux - model_flux
     fitted_period = params[2]
 
     if covariance is not None and np.isfinite(covariance[2, 2]):
-        fitted_period_uncertainty = np.sqrt(covariance[2, 2])
+        formal_period_uncertainty = np.sqrt(covariance[2, 2])
     else:
-        fitted_period_uncertainty = np.nan
+        formal_period_uncertainty = np.nan
 
-    return params, model_flux, residuals, fitted_period, fitted_period_uncertainty
+    return params, model_flux, residuals, fitted_period, formal_period_uncertainty
 
 
-def phase_fold(time, flux, period):
+def fold(time, flux, period):
     phase = (time % period) / period
     order = np.argsort(phase)
 
     return phase[order], flux[order]
 
 
-def save_cleaned_light_curve_plot(data):
+def plot_curve(data):
     plt.figure(figsize=(10, 5))
     plt.scatter(data["time_bkjd"], data["normalized_flux"], s=5, alpha=0.55)
     plt.xlabel("Time (BKJD)")
     plt.ylabel("Normalized flux")
-    plt.title("Cleaned Kepler Light Curve")
+    plt.title("Cleaned light curve")
     plt.tight_layout()
     plt.savefig("outputs/cleaned_light_curve.png", dpi=300)
     plt.close()
 
 
-def save_periodogram_plot(periods, power, best_period, false_alarm_level):
+def plot_periodogram(periods, power, best_period, false_alarm_level):
     plt.figure(figsize=(10, 5))
     plt.plot(periods, power, linewidth=1)
     plt.axvline(best_period, linestyle="--", label=f"Best period = {best_period:.4f} days")
     plt.axhline(false_alarm_level, linestyle=":", label="1% false-alarm level")
     plt.xlabel("Period (days)")
     plt.ylabel("Lomb-Scargle power")
-    plt.title("Lomb-Scargle Periodogram")
+    plt.title("Period search")
     plt.legend()
     plt.tight_layout()
     plt.savefig("outputs/lomb_scargle_periodogram.png", dpi=300)
     plt.close()
 
 
-def save_phase_folded_plot(time, flux, model_flux, period):
-    phase, folded_flux = phase_fold(time, flux, period)
-    model_phase, folded_model = phase_fold(time, model_flux, period)
+def plot_folded(time, flux, model_flux, period):
+    phase, folded_flux = fold(time, flux, period)
+    model_phase, folded_model = fold(time, model_flux, period)
 
     plt.figure(figsize=(10, 5))
     plt.scatter(phase, folded_flux, s=5, alpha=0.45, label="Observed flux")
-    plt.plot(model_phase, folded_model, linewidth=2, label="Sinusoidal fit")
-    plt.xlabel("Orbital phase")
+    plt.plot(model_phase, folded_model, linewidth=2, label="Sine fit")
+    plt.xlabel("Folded phase")
     plt.ylabel("Normalized flux")
-    plt.title("Phase-Folded Kepler Light Curve")
+    plt.title("Folded light curve")
     plt.legend()
     plt.tight_layout()
     plt.savefig("outputs/phase_folded_light_curve.png", dpi=300)
     plt.close()
 
 
-def save_model_plot(time, flux, model_flux):
+def plot_fit(time, flux, model_flux):
     plt.figure(figsize=(10, 5))
     plt.scatter(time, flux, s=5, alpha=0.45, label="Observed flux")
-    plt.plot(time, model_flux, linewidth=1.5, label="Sinusoidal model")
+    plt.plot(time, model_flux, linewidth=1.5, label="Sine model")
     plt.xlabel("Time (BKJD)")
     plt.ylabel("Normalized flux")
-    plt.title("Kepler Light Curve with Sinusoidal Model")
+    plt.title("Model fit")
     plt.legend()
     plt.tight_layout()
     plt.savefig("outputs/model_fit.png", dpi=300)
     plt.close()
 
 
-def save_residual_plot(time, residuals):
+def plot_residuals(time, residuals):
     plt.figure(figsize=(10, 5))
     plt.axhline(0, linestyle="--")
     plt.scatter(time, residuals, s=5, alpha=0.5)
     plt.xlabel("Time (BKJD)")
     plt.ylabel("Residual flux")
-    plt.title("Residuals from Sinusoidal Model")
+    plt.title("Fit residuals")
     plt.tight_layout()
     plt.savefig("outputs/residuals.png", dpi=300)
     plt.close()
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Analyze a Kepler light curve FITS file."
+    )
+    parser.add_argument(
+        "fits_file",
+        nargs="?",
+        help="Optional path to a Kepler FITS file. If omitted, the script searches data/ and the repo root.",
+    )
+    return parser.parse_args()
+
+
 def main():
     os.makedirs("outputs", exist_ok=True)
 
-    fits_path = find_fits_file()
-    data, flagged, raw_count, flux_source = load_kepler_light_curve(fits_path)
+    args = parse_args()
+    fits_path = find_fits(args.fits_file)
+
+    data, flagged, raw_count, flux_source = load_curve(fits_path)
 
     time = data["time_bkjd"].to_numpy()
-    normalized_flux = data["normalized_flux"].to_numpy()
+    flux = data["normalized_flux"].to_numpy()
 
-    periods, power, ls_period, ls_power, false_alarm_level = run_lomb_scargle(
+    periods, power, ls_period, ls_power, false_alarm_level = lomb_scan(time, flux)
+    ls_uncertainty, peak_lower, peak_upper = peak_width(periods, power)
+
+    params, model_flux, residuals, fitted_period, formal_fit_uncertainty = fit_wave(
         time,
-        normalized_flux
-    )
-
-    ls_uncertainty, peak_lower, peak_upper = estimate_period_uncertainty(
-        periods,
-        power,
-        ls_period
-    )
-
-    params, model_flux, residuals, fitted_period, fitted_period_uncertainty = fit_sinusoid(
-        time,
-        normalized_flux,
-        ls_period
+        flux,
+        ls_period,
     )
 
     data["model_flux"] = model_flux
@@ -281,60 +301,69 @@ def main():
     residual_rms = np.sqrt(np.mean(residuals**2))
     residual_std = np.std(residuals, ddof=1)
 
-    summary = pd.DataFrame({
-        "metric": [
-            "fits_file",
-            "flux_source",
-            "raw_point_count",
-            "clean_point_count",
-            "removed_point_count",
-            "lomb_scargle_period_days",
-            "lomb_scargle_period_uncertainty_days",
-            "lomb_scargle_peak_power",
-            "lomb_scargle_false_alarm_level",
-            "sinusoid_fitted_period_days",
-            "sinusoid_period_uncertainty_days",
-            "period_peak_lower_bound_days",
-            "period_peak_upper_bound_days",
-            "residual_rms",
-            "residual_std"
-        ],
-        "value": [
-            fits_path,
-            flux_source,
-            raw_count,
-            len(data),
-            len(flagged),
-            ls_period,
-            ls_uncertainty,
-            ls_power,
-            false_alarm_level,
-            fitted_period,
-            fitted_period_uncertainty,
-            peak_lower,
-            peak_upper,
-            residual_rms,
-            residual_std
-        ]
-    })
+    summary = pd.DataFrame(
+        {
+            "metric": [
+                "fits_file",
+                "flux_source",
+                "period_search_min_days",
+                "period_search_max_days",
+                "period_search_frequency_samples",
+                "raw_point_count",
+                "clean_point_count",
+                "removed_point_count",
+                "lomb_scargle_period_days",
+                "lomb_scargle_peak_width_uncertainty_days",
+                "lomb_scargle_peak_power",
+                "lomb_scargle_false_alarm_level",
+                "sine_fit_period_days",
+                "formal_fit_period_uncertainty_days",
+                "period_peak_lower_bound_days",
+                "period_peak_upper_bound_days",
+                "residual_rms",
+                "residual_std",
+            ],
+            "value": [
+                fits_path,
+                flux_source,
+                MIN_PERIOD,
+                MAX_PERIOD,
+                N_FREQ,
+                raw_count,
+                len(data),
+                len(flagged),
+                ls_period,
+                ls_uncertainty,
+                ls_power,
+                false_alarm_level,
+                fitted_period,
+                formal_fit_uncertainty,
+                peak_lower,
+                peak_upper,
+                residual_rms,
+                residual_std,
+            ],
+        }
+    )
 
     summary.to_csv("outputs/period_analysis_summary.csv", index=False)
 
-    save_cleaned_light_curve_plot(data)
-    save_periodogram_plot(periods, power, ls_period, false_alarm_level)
-    save_model_plot(time, normalized_flux, model_flux)
-    save_phase_folded_plot(time, normalized_flux, model_flux, fitted_period)
-    save_residual_plot(time, residuals)
+    plot_curve(data)
+    plot_periodogram(periods, power, ls_period, false_alarm_level)
+    plot_fit(time, flux, model_flux)
+    plot_folded(time, flux, model_flux, fitted_period)
+    plot_residuals(time, residuals)
 
     print("Loaded FITS file:", fits_path)
     print("Flux source:", flux_source)
     print("Raw points:", raw_count)
     print("Clean points:", len(data))
     print("Removed or flagged points:", len(flagged))
+    print("Period search window:", f"{MIN_PERIOD} to {MAX_PERIOD} days")
     print("Lomb-Scargle period:", round(ls_period, 5), "days")
-    print("Lomb-Scargle period uncertainty:", round(ls_uncertainty, 5), "days")
-    print("Sinusoid fitted period:", round(fitted_period, 5), "days")
-    print("Sinusoid period uncertainty:", round(fitted_period_uncertainty, 5), "days")
+    print("Lomb-Scargle peak-width uncertainty:", round(ls_uncertainty, 5), "days")
+    print("Sine-fit period:", round(fitted_period, 5), "days")
+    print("Formal fit period uncertainty:", round(formal_fit_uncertainty, 5), "days")
     print("Residual RMS:", round(residual_rms, 6))
     print("\nSaved outputs/period_analysis_summary.csv")
 
