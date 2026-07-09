@@ -1,0 +1,8 @@
+metric,value
+injected_period_days,3.72
+lomb_scargle_best_period_days,1.2412021003239864
+box_least_squares_best_period_days,3.720972097209721
+box_least_squares_duration_days,0.17500000000000002
+box_least_squares_depth,0.018723525479600735
+transit_signal_to_noise,4.357646826177297
+lomb_scargle_false_alarm_level,0.00989366278737375

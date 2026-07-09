@@ -1,5 +1,5 @@
 metric,value
-fits_file,kplr000757450-2009350155506_llc.fits
+fits_file,data/kplr000757450-2009350155506_llc.fits
 flux_source,PDCSAP_FLUX
 period_search_min_days,0.5
 period_search_max_days,40.0

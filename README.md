@@ -1,82 +1,62 @@
-# Kepler Light Curve Analysis
+# Stellar Time-Series Analysis
 
-This project reads a Kepler light curve from a FITS file and looks for a repeating signal in the cleaned flux data. The main goal was to work with a real Kepler file instead of a made-up time series, then check whether the strongest period still makes sense after plotting the fit, folded curve, and residuals.
+Period searches on stellar light curves, run as two experiments against one shared search module. The first measures a variability period in a real Kepler light curve. The second validates the search methods on a synthetic light curve with a known injected transit, so recovery accuracy can be checked against ground truth.
 
-The script uses Astropy to read the FITS table. It uses `PDCSAP_FLUX` when that column is available, removes invalid or quality-flagged points, normalizes the flux by the median cleaned flux, and searches for a dominant period with a Lomb-Scargle periodogram.
+The two runs also demonstrate why method choice matters. Lomb-Scargle finds the Kepler star's smooth 19.4 day variability cleanly, but on the box-shaped transit signal it locks onto a 1.24 day alias while Box Least Squares recovers the injected 3.72 day period to within 1.4 minutes.
 
-## What it does
+## Kepler analysis
 
-The analysis pipeline:
+`src/kepler_analysis.py` reads a Kepler FITS light curve (PDCSAP_FLUX preferred, SAP_FLUX fallback), removes NaN, nonpositive, and quality-flagged points, normalizes by the median flux, and searches 0.5 to 40 days with a Lomb-Scargle periodogram at 25,000 frequency samples. A bounded sine fit refines the periodogram period, and the light curve is folded on the fitted value.
 
-- reads a Kepler FITS light curve
-- filters NaN values, nonpositive flux values, and quality-flagged points
-- normalizes the cleaned flux
-- runs a Lomb-Scargle period search from 0.5 to 40 days
-- estimates a rough period uncertainty from the width of the periodogram peak
-- fits a sine curve near the recovered period
-- phase-folds the light curve
-- saves cleaned data, removed points, summary values, and plots
+![Folded Kepler light curve](outputs/kepler/phase_folded_light_curve.png)
 
-This is not meant to claim a planet detection. Periodic brightness changes can come from rotation, pulsation, eclipsing binaries, transits, or other variability. This repo is mainly a small time-series analysis project using real Kepler data.
+Results on the included light curve (KIC 757450, Q3 long cadence, 4134 of 4370 points kept):
+
+| Quantity | Value |
+|---|---|
+| Lomb-Scargle period | 19.4005 days |
+| Peak-width uncertainty | 1.90 days |
+| Sine-fit period | 19.4013 days |
+| Formal fit uncertainty | 0.0195 days |
+| Residual RMS | 0.0033 |
+
+The peak-width uncertainty comes from the half-height width of the periodogram peak, a diagnostic rather than a posterior. Periodic brightness at this level can come from rotation, pulsation, or binarity; the pipeline measures the period without claiming a cause.
+
+## Injection recovery
+
+`src/injection_recovery.py` builds a 30 day synthetic light curve with an injected box transit (period 3.72 days, depth 1.8 percent, duration 0.18 days) plus a slow sinusoidal trend and Gaussian noise, then runs both search methods over 1 to 10 days.
+
+![Folded recovered transit](outputs/injection/phase_folded_transit.png)
+
+| Quantity | Value |
+|---|---|
+| Injected period | 3.72 days |
+| BLS recovered period | 3.72097 days |
+| Absolute error | 0.00097 days (1.4 min) |
+| Recovered duration | 0.175 days |
+| Recovered depth | 0.0187 |
+| Transit SNR | 4.36 |
+| Lomb-Scargle best period | 1.2412 days (alias, expected failure) |
 
 ## Run
 
-Install the Python packages:
+```bash
+python3 -m pip install numpy pandas matplotlib scipy astropy
+python3 src/kepler_analysis.py            # searches data/ for a FITS file
+python3 src/kepler_analysis.py my.fits    # or pass one explicitly
+python3 src/injection_recovery.py
+```
 
-    python3 -m pip install numpy pandas matplotlib astropy scipy
+Figures and CSV tables are written to `outputs/kepler/` and `outputs/injection/`. Each run writes a summary CSV recording every measured quantity and the search settings that produced it.
 
-Run the analysis:
+## Layout
 
-    python3 src/main.py
+```text
+src/period_search.py         shared search methods: Lomb-Scargle, BLS, peak ranking, peak width, folding
+src/kepler_analysis.py       real-data pipeline
+src/injection_recovery.py    synthetic validation pipeline
+data/                        Kepler FITS light curve
+docs/method.md               method details for both pipelines
+```
 
-You can also pass a specific FITS file:
-
-    python3 src/main.py data/your_file.fits
-
-If no file is passed, the script searches for a `.fits` or `.fit` file in `data/` first, then in the repo root.
-
-## Outputs
-
-The script saves cleaned data and summary files in `outputs/`:
-
-    outputs/cleaned_light_curve.csv
-    outputs/flagged_removed_points.csv
-    outputs/period_analysis_summary.csv
-
-It also saves these plots:
-
-    outputs/cleaned_light_curve.png
-    outputs/lomb_scargle_periodogram.png
-    outputs/model_fit.png
-    outputs/phase_folded_light_curve.png
-    outputs/residuals.png
-
-## Example result
-
-For the included Kepler light curve, the period search recovers a signal near 19.4 days. The exact value can shift slightly depending on filtering, the period search grid, and the fitted model. The summary CSV records the Lomb-Scargle period, the fitted sine period, the period search range, the number of removed points, and residual statistics.
-
-## Plots
-
-Cleaned light curve:
-
-![Cleaned light curve](outputs/cleaned_light_curve.png)
-
-Lomb-Scargle periodogram:
-
-![Lomb-Scargle periodogram](outputs/lomb_scargle_periodogram.png)
-
-Model fit:
-
-![Model fit](outputs/model_fit.png)
-
-Phase-folded light curve:
-
-![Phase-folded light curve](outputs/phase_folded_light_curve.png)
-
-Residuals:
-
-![Residuals](outputs/residuals.png)
-
-## Notes
-
-The sine fit is only a simple check against the strongest period. Real stellar variability is usually not a perfect sine wave, and Kepler light curves can include instrumental effects, gaps, and astrophysical variability. The uncertainty values in this project should be read as diagnostic estimates from this workflow, not as a full statistical treatment of the source.
+This repository absorbed the former `exoplanet-signal-detection` project; its pipeline lives on here as the injection-recovery half.
